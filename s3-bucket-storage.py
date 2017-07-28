@@ -13,6 +13,11 @@ import concurrent.futures
 ## Global variables
 ####################
 now = datetime.datetime.now()
+num_workers = 10
+verbose = False
+single_thread = False
+raw_bytes = False
+profile = False
 
 # Output column widths
 f_col_width = 85
@@ -25,15 +30,6 @@ suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] # For human readable
 # Keep running total
 total = 0
 
-# Total number of concurrent workers (default=10)
-num_workers = 10
-
-# Get session
-cw_client = boto3.client('cloudwatch')
-s3_client = boto3.client('s3')
-
-# Get a list of all buckets
-allbuckets = s3_client.list_buckets()
 
 # Prints human readable sizes (source: https://stackoverflow.com/questions/14996453/python-libraries-to-calculate-human-readable-filesize-from-bytes)
 def humansize(nbytes):
@@ -44,10 +40,41 @@ def humansize(nbytes):
     f = ('%.2f' % nbytes).rstrip('0').rstrip('.')
     return '%s %s' % (f, suffixes[i])
 
-# Function definition for getting all info
-def get_bucket_storage(bucket, verbose, raw_bytes):
+# Default get 
+def get_session(**kwargs):
+    if ('profile' in kwargs):
+        if verbose:
+            print("Using %s profile credentials..." % kwargs['profile'])
+
+        # Get session for profile
+        session = boto3.Session(profile_name=kwargs['profile'])
+
+        # Get session
+        cw_client = session.client('cloudwatch')
+        s3_client = session.client('s3')
+
+    else:
+        if verbose:
+            print("Using default profile credentials...")
+
+        # Get session
+        cw_client = boto3.client('cloudwatch')
+        s3_client = boto3.client('s3')
+
+    # Get a list of all buckets
+    allbuckets = s3_client.list_buckets()
+
+    return (cw_client, s3_client, allbuckets)
+
+# Function definition for getting all bucket info
+def get_bucket_storage(bucket, session):
     # get global total
-    global total
+    global total, raw_bytes, verbose
+
+    # Assign session clients
+    cw_client = session[0]
+    s3_client = session[1]
+
     # For each bucket item, look up the cooresponding metrics from CloudWatch
     for st_type in storage_types:
             response = cw_client.get_metric_statistics(Namespace='AWS/S3',
@@ -87,12 +114,11 @@ def print_help():
 
 ## Main function
 def main(argv):
-    # default vars
-    verbose = False
-    single_thread = False
-    raw_bytes = False
-
-    # get global number of workers
+    # get global variables
+    global verbose
+    global single_thread
+    global raw_bytes
+    global profile
     global num_workers
 
     ###################
@@ -116,6 +142,10 @@ def main(argv):
     if "--raw-bytes" in argv:
         raw_bytes = True
 
+    # Get AWS CLI profile
+    if any("--profile" in a for a in argv):
+        profile = [a for a in argv if "--profile" in a][0][10:]
+
     # Turn on verbose mode
     if ("-v" in argv) or ("--verbose" in argv):
         verbose = True
@@ -130,15 +160,22 @@ def main(argv):
     ##################
     ## EXECUTION PHASE
 
+    if profile:
+        session = get_session(profile=profile)
+    else:
+        session = get_session()
+
+    # Store returned buckets
+    allbuckets = session[2]
+
     # Execute get bucket storage
     if single_thread:
         for bucket in allbuckets['Buckets']:
-                get_bucket_storage(bucket, verbose, raw_bytes)
+                get_bucket_storage(bucket, session)
     else:
         # Use multi-threading to make it faster
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executer:
-            future_to_bucket = {executer.submit(get_bucket_storage, bucket, verbose, raw_bytes): bucket for bucket in allbuckets['Buckets']}
-
+            future_to_bucket = {executer.submit(get_bucket_storage, bucket, session): bucket for bucket in allbuckets['Buckets']}
 
     #################
     ## RESULTS
