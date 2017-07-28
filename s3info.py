@@ -155,6 +155,8 @@ NOTE:   You must have the boto3 package installed in your python environment to 
 
 ## Main function
 def main(argv):
+    print("Getting S3 bucket information...")
+
     # get global variables
     global verbose
     global single_thread
