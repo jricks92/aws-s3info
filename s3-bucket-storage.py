@@ -4,23 +4,19 @@
 # Modified by Jameson Ricks, Jul 28, 2017
 # Added human readable output, thread concurrency.
 
-
+import sys
 import boto3
 import datetime
 import concurrent.futures
 
+
+## Global variables
+####################
 now = datetime.datetime.now()
 
-cw = boto3.client('cloudwatch')
-s3client = boto3.client('s3')
-
+# Output column widths
 f_col_width = 85
-
-# Get a list of all buckets
-allbuckets = s3client.list_buckets()
-
-# Header Line for the output going to standard out
-print('Bucket'.ljust(f_col_width) + 'Size in Bytes'.rjust(25))
+l_col_width = 25
 
 # Array of different S3 Storage types
 storage_types = ['StandardStorage', 'StandardIAStorage', 'ReducedRedundancyStorage', 'GlacierObjectOverhead']
@@ -28,6 +24,16 @@ suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] # For human readable
 
 # Keep running total
 total = 0
+
+# Total number of concurrent workers (default=10)
+num_workers = 10
+
+# Get session
+cw_client = boto3.client('cloudwatch')
+s3_client = boto3.client('s3')
+
+# Get a list of all buckets
+allbuckets = s3_client.list_buckets()
 
 # Prints human readable sizes (source: https://stackoverflow.com/questions/14996453/python-libraries-to-calculate-human-readable-filesize-from-bytes)
 def humansize(nbytes):
@@ -39,12 +45,12 @@ def humansize(nbytes):
     return '%s %s' % (f, suffixes[i])
 
 # Function definition for getting all info
-def get_bucket_storage(bucket):
+def get_bucket_storage(bucket, verbose, raw_bytes):
     # get global total
     global total
     # For each bucket item, look up the cooresponding metrics from CloudWatch
     for st_type in storage_types:
-            response = cw.get_metric_statistics(Namespace='AWS/S3',
+            response = cw_client.get_metric_statistics(Namespace='AWS/S3',
                                                 MetricName='BucketSizeBytes',
                                                 Dimensions=[
                                                     {'Name': 'BucketName',
@@ -61,23 +67,90 @@ def get_bucket_storage(bucket):
             # The cloudwatch metrics will have the single datapoint, so we just report on it.
             for item in response["Datapoints"]:
                 bucket_name = bucket["Name"] + " (" + st_type + ")"
-                # print(bucket_name.ljust(50) + str("{:,}".format(int(item["Average"]))).rjust(25))
-                # size(1024)
-                print(bucket_name.ljust(f_col_width) +
-                      humansize(item["Average"]).rjust(25))
-                # Note the use of "{:,}".format.
-                # This is a new shorthand method to format output.
-                # I just discovered it recently.
+                
+                if raw_bytes:
+                    # bucket_bytes = str(int(item["Average"]))
+                    bucket_bytes = str("{:,}".format(int(item["Average"])))
+                else:
+                    bucket_bytes = humansize(item["Average"])
+                
+                if verbose:
+                    print(bucket_name.ljust(f_col_width) +
+                          bucket_bytes.rjust(l_col_width))
+
+                # Add to running total
                 total += int(item["Average"])
 
-# Use multi-threading to make it faster
-with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executer:
-    future_to_bucket = {executer.submit(get_bucket_storage, bucket): bucket for bucket in allbuckets['Buckets']}
-    # Iterate through each bucket
-    # for future in concurrent.futures.as_completed(future_to_bucket):
-    #     pass
-    # for bucket in allbuckets['Buckets']:
-    #     get_bucket_storage(bucket)
+def print_help():
+    print("This is the help message for now...")
 
-print("\n\nTotal stored in S3:".ljust(f_col_width) + humansize(total).rjust(25))
-print("Total bytes stored in S3:".ljust(f_col_width) + str("{:,}".format(int(total))).rjust(25) + " bytes")
+
+## Main function
+def main(argv):
+    # default vars
+    verbose = False
+    single_thread = False
+    raw_bytes = False
+
+    # get global number of workers
+    global num_workers
+
+    ###################
+    ## PARAMETER OPTIONS
+
+    # Show help
+    if ("--help" in argv) or ("-h") in argv:
+        print_help()
+        sys.exit(0)
+
+    # Set number of concurrent workers
+    if any("--workers" in a for a in argv):
+        ## pull number of workers from arg and set global variable
+        num_workers = int([a for a in argv if "--workers" in a][0][10:])
+    
+    # Set single threaded mode
+    if "--single-thread" in argv:
+        single_thread = True
+
+    # Show raw byte values
+    if "--raw-bytes" in argv:
+        raw_bytes = True
+
+    # Turn on verbose mode
+    if ("-v" in argv) or ("--verbose" in argv):
+        verbose = True
+        if raw_bytes:
+            size_str = "Size in Bytes"
+        else:
+            size_str = "Size"
+        # Header Line for the output going to standard out
+        print('Bucket'.ljust(f_col_width) + size_str.rjust(l_col_width))
+        print('-' * (f_col_width + l_col_width))
+
+    ##################
+    ## EXECUTION PHASE
+
+    # Execute get bucket storage
+    if single_thread:
+        for bucket in allbuckets['Buckets']:
+                get_bucket_storage(bucket, verbose, raw_bytes)
+    else:
+        # Use multi-threading to make it faster
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executer:
+            future_to_bucket = {executer.submit(get_bucket_storage, bucket, verbose, raw_bytes): bucket for bucket in allbuckets['Buckets']}
+
+
+    #################
+    ## RESULTS
+
+    if verbose:
+        print('-' * (f_col_width + l_col_width))
+
+    print("Total stored in S3:".ljust(f_col_width) +
+        humansize(total).rjust(l_col_width))
+    print("Total bytes stored in S3:".ljust(f_col_width) +
+        str("{:,}".format(int(total))).rjust(l_col_width) + " bytes")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
