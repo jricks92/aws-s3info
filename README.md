@@ -14,13 +14,13 @@ the default profile stored in your ~/.aws/config file.
 
 ## Usage
 ```
-usage: ./s3info.py  [-h | --help] [-v | --verbose] [--profile=<profile>]
+usage: ./s3info.py  [-h | --help] [-q | --quiet] [--profile=<profile>]
                     [--workers=<# of threads>] [--single-thread] [--raw-bytes]
 
 NOTE:   You must have the boto3 package installed in your python environment to correctly run this
         script.    
         -h OR --help            Shows this help message.
-        -v OR --verbose         Outputs the size of each bucket
+        -q OR --quiet           Supresses output for each bucket and only shows totals.
         --profile=<profile>     Uses the specified profile stored in your ~/.aws/config file.
         --workers=<number>      Specifies a specific number of threads to parse through each S3
                                 bucket (default is 10). More threads may speed up the process if

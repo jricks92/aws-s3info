@@ -10,7 +10,7 @@ import concurrent.futures
 
 try:
     import boto3
-except ImportError, e:
+except ImportError:
     print('''
 ERROR:  You must have the boto3 package installed in your python environment to run 
         this script! You can install it by running:
@@ -23,7 +23,7 @@ ERROR:  You must have the boto3 package installed in your python environment to 
 ####################
 now = datetime.datetime.now()
 num_workers = 10
-verbose = False
+quiet = False
 single_thread = False
 raw_bytes = False
 profile = False
@@ -52,7 +52,7 @@ def humansize(nbytes):
 # Default get 
 def get_session(**kwargs):
     if ('profile' in kwargs):
-        if verbose:
+        if not quiet:
             print("Using %s profile credentials..." % kwargs['profile'])
 
         # Get session for profile
@@ -63,7 +63,7 @@ def get_session(**kwargs):
         s3_client = session.client('s3')
 
     else:
-        if verbose:
+        if not quiet:
             print("Using default profile credentials...")
 
         # Get session
@@ -78,7 +78,7 @@ def get_session(**kwargs):
 # Function definition for getting all bucket info
 def get_bucket_storage(bucket, session):
     # get global total
-    global total, raw_bytes, verbose
+    global total, raw_bytes, quiet
 
     # Assign session clients
     cw_client = session[0]
@@ -110,7 +110,7 @@ def get_bucket_storage(bucket, session):
                 else:
                     bucket_bytes = humansize(item["Average"])
                 
-                if verbose:
+                if not quiet:
                     print(bucket_name.ljust(f_col_width) +
                           bucket_bytes.rjust(l_col_width))
 
@@ -118,7 +118,7 @@ def get_bucket_storage(bucket, session):
                 total += int(item["Average"])
 
 def print_help():
-    print('''usage: ./s3-bucket-storage.py [-h | --help] [-v | --verbose] [--profile=<profile>]
+    print('''usage: ./s3-bucket-storage.py [-h | --help] [-q | --quiet] [--profile=<profile>]
                             [--workers=<# of threads>] [--single-thread] [--raw-bytes] 
     ''')
 
@@ -136,7 +136,7 @@ NOTE:   You must have the boto3 package installed in your python environment to 
 
         -h OR --help            Shows this help message.
 
-        -v OR --verbose         Outputs the size of each bucket
+        -q OR --quiet           Supresses output for each bucket and only shows totals.
 
         --profile=<profile>     Uses the specified profile stored in your ~/.aws/config file.
 
@@ -158,7 +158,7 @@ def main(argv):
     print("Getting S3 bucket information...")
 
     # get global variables
-    global verbose
+    global quiet
     global single_thread
     global raw_bytes
     global profile
@@ -189,16 +189,17 @@ def main(argv):
     if any("--profile" in a for a in argv):
         profile = [a for a in argv if "--profile" in a][0][10:]
 
-    # Turn on verbose mode
-    if ("-v" in argv) or ("--verbose" in argv):
-        verbose = True
-        if raw_bytes:
-            size_str = "Size in Bytes"
-        else:
-            size_str = "Size"
-        # Header Line for the output going to standard out
-        print('Bucket'.ljust(f_col_width) + size_str.rjust(l_col_width))
-        print('-' * (f_col_width + l_col_width))
+    # Turn on quiet mode
+    if ("-q" in argv) or ("--quiet" in argv):
+        quiet = True
+    
+    if raw_bytes:
+        size_str = "Size in Bytes"
+    else:
+        size_str = "Size"
+    # Header Line for the output going to standard out
+    header = '\nBucket'.ljust(f_col_width) + size_str.rjust(l_col_width) + "\n"
+    header +='-' * (f_col_width + l_col_width)
 
     ##################
     ## EXECUTION PHASE
@@ -210,6 +211,10 @@ def main(argv):
 
     # Store returned buckets
     allbuckets = session[2]
+
+    # Print header row
+    if not quiet:
+        print(header)
 
     # Execute get bucket storage
     if single_thread:
@@ -223,7 +228,7 @@ def main(argv):
     #################
     ## RESULTS
 
-    if verbose:
+    if not quiet:
         print('-' * (f_col_width + l_col_width))
 
     print("Total stored in S3:".ljust(f_col_width) +
