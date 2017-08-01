@@ -1,8 +1,8 @@
-#!/usr/local/bin/python3
+#!/usr/bin/python
 
-# Original script taken from http://www.slsmk.com/getting-the-size-of-an-s3-bucket-using-boto3-for-aws/
-# Modified by Jameson Ricks, Jul 28, 2017
-# Added human readable output, thread concurrency.
+# Original idea taken from http://www.slsmk.com/getting-the-size-of-an-s3-bucket-using-boto3-for-aws/
+# Modified by Jameson Ricks, Aug 1, 2017
+# Added human readable output, thread concurrency, profile support, and easy ability to pipe total to another program
 
 import sys
 import datetime
@@ -27,6 +27,8 @@ quiet = False
 single_thread = False
 raw_bytes = False
 profile = False
+no_comma = False
+report_mode = False
 
 # Output column widths
 f_col_width = 85
@@ -86,40 +88,44 @@ def get_bucket_storage(bucket, session):
 
     # For each bucket item, look up the cooresponding metrics from CloudWatch
     for st_type in storage_types:
-            response = cw_client.get_metric_statistics(Namespace='AWS/S3',
-                                                MetricName='BucketSizeBytes',
-                                                Dimensions=[
-                                                    {'Name': 'BucketName',
-                                                        'Value': bucket['Name']},
-                                                    {'Name': 'StorageType',
-                                                        'Value': st_type},
-                                                ],
-                                                Statistics=['Average'],
-                                                Period=3600,
-                                                StartTime=(
-                                                    now - datetime.timedelta(days=1)).isoformat(),
-                                                EndTime=now.isoformat()
-                                                )
-            # The cloudwatch metrics will have the single datapoint, so we just report on it.
-            for item in response["Datapoints"]:
-                bucket_name = bucket["Name"] + " (" + st_type + ")"
-                
-                if raw_bytes:
-                    # bucket_bytes = str(int(item["Average"]))
-                    bucket_bytes = str("{:,}".format(int(item["Average"])))
+        response = cw_client.get_metric_statistics(Namespace='AWS/S3',
+                                            MetricName='BucketSizeBytes',
+                                            Dimensions=[
+                                                {'Name': 'BucketName',
+                                                    'Value': bucket['Name']},
+                                                {'Name': 'StorageType',
+                                                    'Value': st_type},
+                                            ],
+                                            Statistics=['Average'],
+                                            Period=3600,
+                                            StartTime=(
+                                                now - datetime.timedelta(days=1)).isoformat(),
+                                            EndTime=now.isoformat()
+                                            )
+        # The cloudwatch metrics will have the single datapoint, so we just report on it.
+        for item in response["Datapoints"]:
+            bucket_name = bucket["Name"] + " (" + st_type + ")"
+            
+            if raw_bytes:
+                # bucket_bytes = str(int(item["Average"]))
+                if no_comma:
+                    bucket_bytes = str(int(item["Average"]))
                 else:
-                    bucket_bytes = humansize(item["Average"])
-                
-                if not quiet:
-                    print(bucket_name.ljust(f_col_width) +
-                          bucket_bytes.rjust(l_col_width))
+                    bucket_bytes = str("{:,}".format(int(item["Average"])))
+            else:
+                bucket_bytes = humansize(item["Average"])
+            
+            if not quiet:
+                print(bucket_name.ljust(f_col_width) +
+                        bucket_bytes.rjust(l_col_width))
 
-                # Add to running total
-                total += int(item["Average"])
+            # Add to running total
+            total += int(item["Average"])
 
 def print_help():
     print('''usage: ./s3-bucket-storage.py [-h | --help] [-q | --quiet] [--profile=<profile>]
-                            [--workers=<# of threads>] [--single-thread] [--raw-bytes] 
+                            [--workers=<# of threads>] [--single-thread] [--raw-bytes] [--no-commas]
+                            [--report-mode]
     ''')
 
     print('''DESCRIPTION
@@ -142,7 +148,7 @@ NOTE:   You must have the boto3 package installed in your python environment to 
 
         --workers=<number>      Specifies a specific number of threads to parse through each S3
                                 bucket (default is 10). More threads may speed up the process if
-                                you have a large number of S3 buckets in your account.abs
+                                you have a large number of S3 buckets in your account.
 
         --single-thread         Runs this script using one thread. This is useful if you want to
                                 see all your buckets output in alphabetical order. Using this
@@ -150,19 +156,28 @@ NOTE:   You must have the boto3 package installed in your python environment to 
 
         --raw-bytes             Using this option, you can output each bucket size in bytes
                                 instead of KB, MB, GB, or PB.
+        
+        --no-comma OR -nc      Used in conjuction with --raw-bytes, does not output commas in
+                                numbers.
+                            
+        --report-mode           This option only outputs the number of bytes without commas to
+                                the console. This allows the output to be piped to a variable,
+                                function, etc. This option automatically turns on --quiet,  
+                                --raw-bytes, and --no-comma flags.
     ''')
 
 
 ## Main function
 def main(argv):
-    print("Getting S3 bucket information...")
 
     # get global variables
     global quiet
     global single_thread
     global raw_bytes
+    global no_comma
     global profile
     global num_workers
+    global report_mode
 
     ###################
     ## PARAMETER OPTIONS
@@ -182,8 +197,12 @@ def main(argv):
         single_thread = True
 
     # Show raw byte values
-    if "--raw-bytes" in argv:
+    if ("--raw-bytes" in argv) or ("-r" in argv):
         raw_bytes = True
+    
+    # Don't output commas
+    if ("--no-commas" in argv) or ("--no-comma" in argv) or ("-nc" in argv):
+        no_comma = True
 
     # Get AWS CLI profile
     if any("--profile" in a for a in argv):
@@ -192,6 +211,13 @@ def main(argv):
     # Turn on quiet mode
     if ("-q" in argv) or ("--quiet" in argv):
         quiet = True
+
+    # Turn on report mode
+    if "--report-mode" in argv:
+        report_mode = True
+        quiet = True
+        no_comma = True
+        raw_bytes = True
     
     if raw_bytes:
         size_str = "Size in Bytes"
@@ -214,6 +240,7 @@ def main(argv):
 
     # Print header row
     if not quiet:
+        print("Getting S3 bucket information...")
         print(header)
 
     # Execute get bucket storage
@@ -231,10 +258,17 @@ def main(argv):
     if not quiet:
         print('-' * (f_col_width + l_col_width))
 
-    print("Total stored in S3:".ljust(f_col_width) +
-        humansize(total).rjust(l_col_width))
-    print("Total bytes stored in S3:".ljust(f_col_width) +
-        str("{:,}".format(int(total))).rjust(l_col_width) + " bytes")
+    if report_mode:
+        print(total)
+    else:
+        if raw_bytes:
+            if no_comma:
+                print("Total bytes stored in S3:".ljust(f_col_width) + str(int(total)).rjust(l_col_width))
+            else:
+                print("Total bytes stored in S3:".ljust(f_col_width) + str("{:,}".format(int(total))).rjust(l_col_width))
+        else:
+            print("Total stored in S3:".ljust(f_col_width) +
+            humansize(total).rjust(l_col_width))
 
 
 if __name__ == "__main__":
