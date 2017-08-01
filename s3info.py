@@ -16,7 +16,7 @@
 # limitations under the License.
 #
 
-# Original idea taken from http://www.slsmk.com/getting-the-size-of-an-s3-bucket-using-boto3-for-aws/
+# Original idea taken from http://www.slsmk.com/getting-the-size-of-an-s3-bucket-using-boto3-for-aws
 # Added human readable output, thread concurrency, profile support, and easy ability to pipe total to another program
 
 import sys
@@ -138,9 +138,9 @@ def get_bucket_storage(bucket, session):
             total += int(item["Average"])
 
 def print_help():
-    print('''usage: ./s3-bucket-storage.py [-h | --help] [-q | --quiet] [--profile=<profile>]
-                            [--workers=<# of threads>] [--single-thread] [--raw-bytes] [--no-commas]
-                            [--report-mode]
+    print('''usage: ./s3-info.py    [-h | --help] [-q | --quiet] [--profile=<profile>]
+                        [--workers=<# of threads>] [--single-thread] [--raw-bytes] 
+                        [--no-commas] [--report-mode]
     ''')
 
     print('''DESCRIPTION
