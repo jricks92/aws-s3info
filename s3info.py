@@ -21,10 +21,12 @@
 
 import sys
 import datetime
+import collections
 import concurrent.futures
 
 try:
     import boto3
+    from botocore.exceptions import ClientError
 except ImportError:
     print('''
 ERROR:  You must have the boto3 package installed in your python environment to run 
@@ -34,31 +36,203 @@ ERROR:  You must have the boto3 package installed in your python environment to 
     sys.exit(1)
 
 
-## Global variables
-####################
-now = datetime.datetime.now()
-num_workers = 10
-quiet = False
-single_thread = False
-raw_bytes = False
-profile = False
-no_comma = False
-report_mode = False
+class Session:
+    ## Default variables
+    now = datetime.datetime.now()
+    num_workers = 10
+    quiet = False
+    single_thread = False
+    raw_bytes = False
+    profile = False
+    no_comma = False
+    report_mode = False
 
-# Output column widths
-f_col_width = 85
-l_col_width = 25
+    # Output column widths
+    f_col_width = 85
+    l_col_width = 25
 
-# Array of different S3 Storage types
-storage_types = ['StandardStorage', 'StandardIAStorage', 'ReducedRedundancyStorage', 'GlacierObjectOverhead']
-suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] # For human readable
+    # Array of different S3 Storage types
+    storage_types = ['StandardStorage', 'StandardIAStorage',
+                     'ReducedRedundancyStorage', 'GlacierObjectOverhead']
+    suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']  # For human readable
 
-# Keep running total
-total = 0
+    # Keep running total
+    total = 0
 
+    # Strings
+    size_str = "Size"
+    # Header Line for the output going to standard out
+    header = '\nBucket'.ljust(f_col_width) + size_str.rjust(l_col_width) + "\n"
+    header += '-' * (f_col_width + l_col_width)
+
+    # Buckets
+    all_buckets = {}
+
+    # Results
+    results = collections.OrderedDict()
+
+    def get_bucket_region(self, bucket, s3_client):
+        try:
+            region = s3_client.get_bucket_location(Bucket=bucket)["LocationConstraint"]
+        except ClientError as e:
+            print("Error on bucket: %s" % bucket)
+            print(e)
+            return
+
+        if region == None:
+            region = 'us-east-1'
+
+        self.all_buckets[bucket] = region
+
+    # Gets the correct cloudwatch client depending on the region
+    def get_cloudwatch_client(self, bucket, session):
+        if session.region_name == self.all_buckets[bucket]:
+            cw_client = session.client('cloudwatch')
+            return cw_client
+        else:
+            new_session = boto3.Session(region_name=self.all_buckets[bucket])
+            cw_client = new_session.client('cloudwatch')
+            return cw_client
+
+    # Outputs the results of the process
+    def print_results(self):
+        # Print header line
+        if not self.quiet:
+            print("Getting S3 bucket information...")
+            print(self.header)
+        # Sort the buckets
+        results_sorted = collections.OrderedDict(sorted(self.results.items()))
+        for bucket in results_sorted:
+            for st_type in results_sorted[bucket]:
+                bucket_name = "%s (%s)" % (bucket, st_type)
+                if self.raw_bytes:
+                    bucket_bytes = str(results_sorted[bucket][st_type])
+                    if self.no_comma:
+                        bucket_bytes = str(results_sorted[bucket][st_type])
+                    else:
+                        bucket_bytes = str("{:,}".format(results_sorted[bucket][st_type]))
+                else:
+                    bucket_bytes=humansize(results_sorted[bucket][st_type], self.suffixes)
+
+                if not self.quiet:
+                    print(bucket_name.ljust(self.f_col_width) +
+                        bucket_bytes.rjust(self.l_col_width))
+        
+        if not self.quiet:
+            print('-' * (self.f_col_width + self.l_col_width))
+
+        if self.report_mode:
+            print(self.total)
+        else:
+            if self.raw_bytes:
+                if self.no_comma:
+                    print("Total bytes stored in S3:".ljust(self.f_col_width) + str(int(self.total)).rjust(self.l_col_width))
+                else:
+                    print("Total bytes stored in S3:".ljust(self.f_col_width) + str("{:,}".format(int(self.total))).rjust(self.l_col_width))
+            else:
+                print("Total stored in S3:".ljust(self.f_col_width) + humansize(self.total, self.suffixes).rjust(self.l_col_width))
+
+    # Function definition for getting all bucket info
+    def get_bucket_storage(self, bucket, aws_session):
+        # Get correct CloudWatch client
+        cw_client = self.get_cloudwatch_client(bucket, aws_session)
+        # For each bucket item, look up the cooresponding metrics from CloudWatch
+        for st_type in self.storage_types:
+            response = cw_client.get_metric_statistics(Namespace='AWS/S3',
+                                                        MetricName='BucketSizeBytes',
+                                                        Dimensions=[
+                                                            {'Name': 'BucketName',
+                                                            'Value': bucket},
+                                                            {'Name': 'StorageType',
+                                                            'Value': st_type},
+                                                        ],
+                                                        Statistics=['Average'],
+                                                        Period=3600,
+                                                        StartTime=(
+                                                            self.now - datetime.timedelta(days=1)).isoformat(),
+                                                       EndTime=self.now.isoformat()
+                                                        )
+            # The cloudwatch metrics will have the single datapoint, so we just report on it.
+            for item in response["Datapoints"]:
+                # Create a blank dictionary if we don't have anything yet.
+                if bucket not in self.results:
+                    self.results[bucket] = {}
+
+                self.results[bucket][st_type] = int(item["Average"])
+
+                # Add to running total
+                self.total += int(item["Average"])
+
+# Gets all s3 buckets in region for session
+def get_s3_buckets(session_obj, session):
+    s3_client = get_s3_client(session)
+
+    # Get bucket location
+    if session_obj.single_thread:
+        for bucket in s3_client.list_buckets()['Buckets']:
+            session_obj.get_bucket_region(bucket['Name'], s3_client)
+    else:
+        # Use multi-threading to make it faster
+        with concurrent.futures.ThreadPoolExecutor(max_workers=session_obj.num_workers) as executer:
+            future_to_bucket = {executer.submit(session_obj.get_bucket_region, bucket['Name'], s3_client): bucket for bucket in s3_client.list_buckets()['Buckets']}
+
+# Loops through each s3 Bucket
+def list_bucket_info(session_obj, session):
+    if session_obj.single_thread:
+        for bucket in session_obj.all_buckets:
+                session_obj.get_bucket_storage(bucket, session)
+    else:
+        # Use multi-threading to make it faster
+        with concurrent.futures.ThreadPoolExecutor(max_workers=session_obj.num_workers) as executer:
+            future_to_bucket = {executer.submit(
+                session_obj.get_bucket_storage, bucket, session): bucket for bucket in session_obj.all_buckets}
+
+
+# For parsing input arguments
+def parse_args(argv, session):
+     # Show help
+    if ("--help" in argv) or ("-h") in argv:
+        print_help()
+        sys.exit(0)
+
+    # Set number of concurrent workers
+    if any("--workers" in a for a in argv):
+        ## pull number of workers from arg and set global variable
+        session.num_workers = int(
+            [a for a in argv if "--workers" in a][0][10:])
+
+    # Set single threaded mode
+    if "--single-thread" in argv:
+        session.single_thread = True
+
+    # Show raw byte values
+    if ("--raw-bytes" in argv) or ("-r" in argv):
+        session.raw_bytes = True
+
+    # Don't output commas
+    if ("--no-commas" in argv) or ("--no-comma" in argv) or ("-nc" in argv):
+        session.no_comma = True
+
+    # Get AWS CLI profile
+    if any("--profile" in a for a in argv):
+        session.profile = [a for a in argv if "--profile" in a][0][10:]
+
+    # Turn on quiet mode
+    if ("-q" in argv) or ("--quiet" in argv):
+        session.quiet = True
+
+    # Turn on report mode
+    if "--report-mode" in argv:
+        session.report_mode = True
+        session.quiet = True
+        session.no_comma = True
+        session.raw_bytes = True
+
+    if session.raw_bytes:
+        session.size_str = "Size in Bytes"
 
 # Prints human readable sizes (source: https://stackoverflow.com/questions/14996453/python-libraries-to-calculate-human-readable-filesize-from-bytes)
-def humansize(nbytes):
+def humansize(nbytes, suffixes):
     i = 0
     while nbytes >= 1024 and i < len(suffixes) - 1:
         nbytes /= 1024.
@@ -66,76 +240,20 @@ def humansize(nbytes):
     f = ('%.2f' % nbytes).rstrip('0').rstrip('.')
     return '%s %s' % (f, suffixes[i])
 
-# Default get 
-def get_session(**kwargs):
-    if ('profile' in kwargs):
-        if not quiet:
-            print("Using %s profile credentials..." % kwargs['profile'])
+# Getting the AWS session
+def get_boto_session(**kwargs):
+    session = boto3.Session(region_name='us-east-1')
 
+    if ('profile' in kwargs):
         # Get session for profile
         session = boto3.Session(profile_name=kwargs['profile'])
 
-        # Get session
-        cw_client = session.client('cloudwatch')
-        s3_client = session.client('s3')
+    return session
 
-    else:
-        if not quiet:
-            print("Using default profile credentials...")
+# Get S3 Client
+def get_s3_client(session):
+    return session.client('s3')
 
-        # Get session
-        cw_client = boto3.client('cloudwatch')
-        s3_client = boto3.client('s3')
-
-    # Get a list of all buckets
-    allbuckets = s3_client.list_buckets()
-
-    return (cw_client, s3_client, allbuckets)
-
-# Function definition for getting all bucket info
-def get_bucket_storage(bucket, session):
-    # get global total
-    global total, raw_bytes, quiet
-
-    # Assign session clients
-    cw_client = session[0]
-    s3_client = session[1]
-
-    # For each bucket item, look up the cooresponding metrics from CloudWatch
-    for st_type in storage_types:
-        response = cw_client.get_metric_statistics(Namespace='AWS/S3',
-                                            MetricName='BucketSizeBytes',
-                                            Dimensions=[
-                                                {'Name': 'BucketName',
-                                                    'Value': bucket['Name']},
-                                                {'Name': 'StorageType',
-                                                    'Value': st_type},
-                                            ],
-                                            Statistics=['Average'],
-                                            Period=3600,
-                                            StartTime=(
-                                                now - datetime.timedelta(days=1)).isoformat(),
-                                            EndTime=now.isoformat()
-                                            )
-        # The cloudwatch metrics will have the single datapoint, so we just report on it.
-        for item in response["Datapoints"]:
-            bucket_name = bucket["Name"] + " (" + st_type + ")"
-            
-            if raw_bytes:
-                # bucket_bytes = str(int(item["Average"]))
-                if no_comma:
-                    bucket_bytes = str(int(item["Average"]))
-                else:
-                    bucket_bytes = str("{:,}".format(int(item["Average"])))
-            else:
-                bucket_bytes = humansize(item["Average"])
-            
-            if not quiet:
-                print(bucket_name.ljust(f_col_width) +
-                        bucket_bytes.rjust(l_col_width))
-
-            # Add to running total
-            total += int(item["Average"])
 
 def print_help():
     print('''usage: ./s3-info.py    [-h | --help] [-q | --quiet] [--profile=<profile>]
@@ -185,105 +303,17 @@ NOTE:   You must have the boto3 package installed in your python environment to 
 ## Main function
 def main(argv):
 
-    # get global variables
-    global quiet
-    global single_thread
-    global raw_bytes
-    global no_comma
-    global profile
-    global num_workers
-    global report_mode
+    session = Session()
 
-    ###################
-    ## PARAMETER OPTIONS
+    parse_args(argv, session)
 
-    # Show help
-    if ("--help" in argv) or ("-h") in argv:
-        print_help()
-        sys.exit(0)
+    aws_session = get_boto_session()
 
-    # Set number of concurrent workers
-    if any("--workers" in a for a in argv):
-        ## pull number of workers from arg and set global variable
-        num_workers = int([a for a in argv if "--workers" in a][0][10:])
-    
-    # Set single threaded mode
-    if "--single-thread" in argv:
-        single_thread = True
+    get_s3_buckets(session, aws_session)
 
-    # Show raw byte values
-    if ("--raw-bytes" in argv) or ("-r" in argv):
-        raw_bytes = True
-    
-    # Don't output commas
-    if ("--no-commas" in argv) or ("--no-comma" in argv) or ("-nc" in argv):
-        no_comma = True
+    list_bucket_info(session, aws_session)
 
-    # Get AWS CLI profile
-    if any("--profile" in a for a in argv):
-        profile = [a for a in argv if "--profile" in a][0][10:]
-
-    # Turn on quiet mode
-    if ("-q" in argv) or ("--quiet" in argv):
-        quiet = True
-
-    # Turn on report mode
-    if "--report-mode" in argv:
-        report_mode = True
-        quiet = True
-        no_comma = True
-        raw_bytes = True
-    
-    if raw_bytes:
-        size_str = "Size in Bytes"
-    else:
-        size_str = "Size"
-    # Header Line for the output going to standard out
-    header = '\nBucket'.ljust(f_col_width) + size_str.rjust(l_col_width) + "\n"
-    header +='-' * (f_col_width + l_col_width)
-
-    ##################
-    ## EXECUTION PHASE
-
-    if profile:
-        session = get_session(profile=profile)
-    else:
-        session = get_session()
-
-    # Store returned buckets
-    allbuckets = session[2]
-
-    # Print header row
-    if not quiet:
-        print("Getting S3 bucket information...")
-        print(header)
-
-    # Execute get bucket storage
-    if single_thread:
-        for bucket in allbuckets['Buckets']:
-                get_bucket_storage(bucket, session)
-    else:
-        # Use multi-threading to make it faster
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executer:
-            future_to_bucket = {executer.submit(get_bucket_storage, bucket, session): bucket for bucket in allbuckets['Buckets']}
-
-    #################
-    ## RESULTS
-
-    if not quiet:
-        print('-' * (f_col_width + l_col_width))
-
-    if report_mode:
-        print(total)
-    else:
-        if raw_bytes:
-            if no_comma:
-                print("Total bytes stored in S3:".ljust(f_col_width) + str(int(total)).rjust(l_col_width))
-            else:
-                print("Total bytes stored in S3:".ljust(f_col_width) + str("{:,}".format(int(total))).rjust(l_col_width))
-        else:
-            print("Total stored in S3:".ljust(f_col_width) +
-            humansize(total).rjust(l_col_width))
+    session.print_results()
 
 
 if __name__ == "__main__":
