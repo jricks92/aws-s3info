@@ -59,6 +59,7 @@ class Session:
 
     # Keep running total
     total = 0
+    total_objects = 0
 
     # Strings
     size_str = "Size"
@@ -105,19 +106,28 @@ class Session:
         results_sorted = collections.OrderedDict(sorted(self.results.items()))
         for bucket in results_sorted:
             for st_type in results_sorted[bucket]:
-                bucket_name = "%s (%s)" % (bucket, st_type)
-                if self.raw_bytes:
-                    bucket_bytes = str(results_sorted[bucket][st_type])
-                    if self.no_comma:
-                        bucket_bytes = str(results_sorted[bucket][st_type])
+                if st_type != "NumberOfObjects":
+                    # Print storage type with bucket
+                    bucket_name = "%s (%s)" % (bucket, st_type)
+                    # Append number of items per bucket
+                    bucket_bytes = "(" + str(results_sorted[bucket]["NumberOfObjects"])
+                    if int(results_sorted[bucket]["NumberOfObjects"]) > 1:
+                        bucket_bytes += " Items) "
                     else:
-                        bucket_bytes = str("{:,}".format(results_sorted[bucket][st_type]))
-                else:
-                    bucket_bytes=humansize(results_sorted[bucket][st_type], self.suffixes)
-
-                if not self.quiet:
-                    print(bucket_name.ljust(self.f_col_width) +
-                        bucket_bytes.rjust(self.l_col_width))
+                        bucket_bytes += " Item) "
+                    # Check arguments to ensure correct output
+                    if self.raw_bytes:
+                        bucket_bytes += str(results_sorted[bucket][st_type])
+                        if self.no_comma:
+                            bucket_bytes += str(results_sorted[bucket][st_type])
+                        else:
+                            bucket_bytes += str("{:,}".format(results_sorted[bucket][st_type]))
+                    else:
+                        bucket_bytes += humansize(results_sorted[bucket][st_type], self.suffixes)
+                    # Print out each line
+                    if not self.quiet:
+                        print(bucket_name.ljust(self.f_col_width) +
+                            bucket_bytes.rjust(self.l_col_width))
         
         if not self.quiet:
             print('-' * (self.f_col_width + self.l_col_width))
@@ -133,12 +143,45 @@ class Session:
             else:
                 print("Total stored in S3:".ljust(self.f_col_width) + humansize(self.total, self.suffixes).rjust(self.l_col_width))
 
+        # self.print_csv()
+
+    def print_csv(self):
+        header_line = "Region,Bucket,"
+        for st_type in self.storage_types:
+            header_line += st_type + ","
+
+        print("")
+        print(header_line)
+
+        results = dict(self.results)
+
+        for bucket in self.all_buckets:
+            if bucket in results:
+                line = self.all_buckets[bucket] + ","
+                line += bucket + ","
+
+                if 'StandardStorage' in results[bucket]:
+                    line += str(results[bucket]['StandardStorage'])
+                line += ","
+
+                if 'StandardIAStorage' in results[bucket]:
+                    line += str(results[bucket]['StandardIAStorage'])
+                line += ","
+
+                if 'ReducedRedundancyStorage' in results[bucket]:
+                    line += str(results[bucket]['ReducedRedundancyStorage'])
+                line += ","
+
+                if 'GlacierObjectOverhead' in results[bucket]:
+                    line += str(results[bucket]['GlacierObjectOverhead'])
+                line += ","
+                print(line)
 
     # Function definition for getting all bucket info
     def get_bucket_storage(self, bucket, aws_session):
         # Get correct CloudWatch client
         cw_client = self.get_cloudwatch_client(bucket, aws_session)
-        # For each bucket item, look up the cooresponding metrics from CloudWatch
+        # For each bucket item, look up the total size from CloudWatch
         for st_type in self.storage_types:
             response = cw_client.get_metric_statistics(Namespace='AWS/S3',
                                                         MetricName='BucketSizeBytes',
@@ -164,6 +207,32 @@ class Session:
 
                 # Add to running total
                 self.total += int(item["Average"])
+        
+        # For each bucket item, look up the total size from CloudWatch
+        response = cw_client.get_metric_statistics(Namespace='AWS/S3',
+                                                    MetricName='NumberOfObjects',
+                                                    Dimensions=[
+                                                        {'Name': 'BucketName',
+                                                        'Value': bucket},
+                                                        {'Name': 'StorageType',
+                                                        'Value': 'AllStorageTypes'},
+                                                    ],
+                                                    Statistics=['Average'],
+                                                    Period=3600,
+                                                    StartTime=(
+                                                        self.now - datetime.timedelta(days=1)).isoformat(),
+                                                    EndTime=self.now.isoformat()
+                                                    )
+        # The cloudwatch metrics will have the single datapoint, so we just report on it.
+        for item in response["Datapoints"]:
+            # Create a blank dictionary if we don't have anything yet.
+            if bucket not in self.results:
+                self.results[bucket] = {}
+
+            self.results[bucket]["NumberOfObjects"] = int(item["Average"])
+
+            # Add to running total
+            self.total_objects += int(item["Average"])
 
 # Gets all s3 buckets in region for session
 def get_s3_buckets(session_obj, session):
