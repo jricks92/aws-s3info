@@ -46,6 +46,7 @@ class Session:
     profile = False
     no_comma = False
     report_mode = False
+    profile = None
 
     # Output column widths
     f_col_width = 85
@@ -75,8 +76,9 @@ class Session:
         try:
             region = s3_client.get_bucket_location(Bucket=bucket)["LocationConstraint"]
         except ClientError as e:
-            print("Error on bucket: %s" % bucket)
-            print(e)
+            if not self.quiet:
+                print("Error on bucket: %s" % bucket)
+                print(e)
             return
 
         if region == None:
@@ -98,7 +100,6 @@ class Session:
     def print_results(self):
         # Print header line
         if not self.quiet:
-            print("Getting S3 bucket information...")
             print(self.header)
         # Sort the buckets
         results_sorted = collections.OrderedDict(sorted(self.results.items()))
@@ -131,6 +132,7 @@ class Session:
                     print("Total bytes stored in S3:".ljust(self.f_col_width) + str("{:,}".format(int(self.total))).rjust(self.l_col_width))
             else:
                 print("Total stored in S3:".ljust(self.f_col_width) + humansize(self.total, self.suffixes).rjust(self.l_col_width))
+
 
     # Function definition for getting all bucket info
     def get_bucket_storage(self, bucket, aws_session):
@@ -165,6 +167,10 @@ class Session:
 
 # Gets all s3 buckets in region for session
 def get_s3_buckets(session_obj, session):
+
+    if not session_obj.quiet:
+        print("Getting S3 bucket information...")
+
     s3_client = get_s3_client(session)
 
     # Get bucket location
@@ -241,18 +247,18 @@ def humansize(nbytes, suffixes):
     return '%s %s' % (f, suffixes[i])
 
 # Getting the AWS session
-def get_boto_session(**kwargs):
-    session = boto3.Session(region_name='us-east-1')
+def get_boto_session(session):
+    aws_session = boto3.Session()
 
-    if ('profile' in kwargs):
+    if session.profile:
         # Get session for profile
-        session = boto3.Session(profile_name=kwargs['profile'])
+        aws_session = boto3.Session(profile_name=session.profile)
 
-    return session
+    return aws_session
 
 # Get S3 Client
-def get_s3_client(session):
-    return session.client('s3')
+def get_s3_client(aws_session):
+    return aws_session.client('s3')
 
 
 def print_help():
@@ -307,7 +313,7 @@ def main(argv):
 
     parse_args(argv, session)
 
-    aws_session = get_boto_session()
+    aws_session = get_boto_session(session)
 
     get_s3_buckets(session, aws_session)
 
