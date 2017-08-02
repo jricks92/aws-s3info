@@ -380,7 +380,8 @@ bucket according to type of storage (Standard, Infrequently Accessed, Reduced Re
 Glacier Objects). Buckets that have multiple types of storage will be listed twice. This tool 
 uses concurrent threads to speed up the process. As such, buckets will not be listed
 in alphabetical order unless you run with the --single-thread flag. By default, this tool uses 
-the default profile stored in your ~/.aws/config file.
+the default profile stored in your ~/.aws/config file. IMPORTANT: Make sure you have a default
+region associated with your profile!
 
 NOTE:   You must have the boto3 package installed in your python environment to correctly run this
         script.    
