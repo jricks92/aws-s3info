@@ -47,6 +47,7 @@ class Session:
     no_comma = False
     report_mode = False
     profile = None
+    region_csv = False
 
     # Output column widths
     f_col_width = 85
@@ -99,6 +100,11 @@ class Session:
 
     # Outputs the results of the process
     def print_results(self):
+
+        if self.region_csv:
+            self.print_regions_csv()
+            return
+
         # Print header line
         if not self.quiet:
             print(self.header)
@@ -117,7 +123,6 @@ class Session:
                         bucket_bytes += " Item) "
                     # Check arguments to ensure correct output
                     if self.raw_bytes:
-                        bucket_bytes += str(results_sorted[bucket][st_type])
                         if self.no_comma:
                             bucket_bytes += str(results_sorted[bucket][st_type])
                         else:
@@ -143,39 +148,64 @@ class Session:
             else:
                 print("Total stored in S3:".ljust(self.f_col_width) + humansize(self.total, self.suffixes).rjust(self.l_col_width))
 
-        # self.print_csv()
-
-    def print_csv(self):
-        header_line = "Region,Bucket,"
+    # Prints the region totals in csv format
+    def print_regions_csv(self):
+        header_line = "Region,"
         for st_type in self.storage_types:
             header_line += st_type + ","
 
-        print("")
+        header_line += "Total Files,Total Bytes,"
+
         print(header_line)
 
         results = dict(self.results)
 
+        totals = collections.OrderedDict()
+
         for bucket in self.all_buckets:
             if bucket in results:
-                line = self.all_buckets[bucket] + ","
-                line += bucket + ","
+                # Check if region name is already stored in dictionary
+                if self.all_buckets[bucket] not in totals:
+                    # Region Totals
+                    totals[self.all_buckets[bucket]] = {
+                        "StandardStorage": 0,
+                        "StandardIAStorage": 0,
+                        "ReducedRedundancyStorage": 0,
+                        "GlacierObjectOverhead": 0,
+                        "TotalFiles": 0,
+                        "TotalBytes": 0,
+                    }
 
                 if 'StandardStorage' in results[bucket]:
-                    line += str(results[bucket]['StandardStorage'])
-                line += ","
+                    totals[self.all_buckets[bucket]]['StandardStorage'] += results[bucket]['StandardStorage']
+                    totals[self.all_buckets[bucket]]['TotalBytes'] += results[bucket]['StandardStorage']
 
                 if 'StandardIAStorage' in results[bucket]:
-                    line += str(results[bucket]['StandardIAStorage'])
-                line += ","
+                    totals[self.all_buckets[bucket]]['StandardIAStorage'] += results[bucket]['StandardIAStorage']
+                    totals[self.all_buckets[bucket]]['TotalBytes'] += results[bucket]['StandardIAStorage']
 
                 if 'ReducedRedundancyStorage' in results[bucket]:
-                    line += str(results[bucket]['ReducedRedundancyStorage'])
-                line += ","
+                    totals[self.all_buckets[bucket]]['ReducedRedundancyStorage'] += results[bucket]['ReducedRedundancyStorage']
+                    totals[self.all_buckets[bucket]]['TotalBytes'] += results[bucket]['ReducedRedundancyStorage']
 
                 if 'GlacierObjectOverhead' in results[bucket]:
-                    line += str(results[bucket]['GlacierObjectOverhead'])
-                line += ","
-                print(line)
+                    totals[self.all_buckets[bucket]]['GlacierObjectOverhead'] += results[bucket]['GlacierObjectOverhead']
+                    totals[self.all_buckets[bucket]]['TotalBytes'] += results[bucket]['GlacierObjectOverhead']
+
+                if 'NumberOfObjects' in results[bucket]:
+                    totals[self.all_buckets[bucket]]['TotalFiles'] += results[bucket]['NumberOfObjects']
+
+
+        for region in totals:
+            line = "%s," % region
+            line += "%s," % totals[region]['StandardStorage']
+            line += "%s," % totals[region]['StandardIAStorage']
+            line += "%s," % totals[region]['ReducedRedundancyStorage']
+            line += "%s," % totals[region]['GlacierObjectOverhead']
+            line += "%s," % totals[region]['TotalFiles']
+            line += "%s," % totals[region]['TotalBytes']
+            print(line)
+
 
     # Function definition for getting all bucket info
     def get_bucket_storage(self, bucket, aws_session):
@@ -303,6 +333,13 @@ def parse_args(argv, session):
         session.no_comma = True
         session.raw_bytes = True
 
+    if "--region-csv" in argv:
+        session.report_mode = True
+        session.quiet = True
+        session.no_comma = True
+        session.raw_bytes = True
+        session.region_csv = True
+
     if session.raw_bytes:
         session.size_str = "Size in Bytes"
 
@@ -365,13 +402,25 @@ NOTE:   You must have the boto3 package installed in your python environment to 
         --raw-bytes             Using this option, you can output each bucket size in bytes
                                 instead of KB, MB, GB, or PB.
         
-        --no-comma OR -nc      Used in conjuction with --raw-bytes, does not output commas in
+        --no-comma OR -nc       Used in conjuction with --raw-bytes, does not output commas in
                                 numbers.
+
+        --region-csv            Prints out a csv format of aggregated data by region. This option 
+                                automatically turns on --quiet mode. It's best to pipe this output
+                                to a file. Example:
+
+                                        ./s3info.py --region-csv > s3-report.csv
+
+                                NOTE: This mode will suppress all AccessDenied errors for buckets. 
+                                Make sure the access keys/profile you are using has permission to 
+                                read all your buckets.
                             
         --report-mode           This option only outputs the number of bytes without commas to
                                 the console. This allows the output to be piped to a variable,
                                 function, etc. This option automatically turns on --quiet,  
-                                --raw-bytes, and --no-comma flags.
+                                --raw-bytes, and --no-comma flags. NOTE: This mode will suppress 
+                                all AccessDenied errors for buckets. Make sure the access keys/profile
+                                you are using has permission to read all your buckets.
     ''')
 
 

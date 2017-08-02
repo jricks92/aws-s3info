@@ -40,8 +40,20 @@ NOTE:   You must have the boto3 package installed in your python environment to 
         --no-comma OR -nc       Used in conjuction with --raw-bytes, does not output commas in
                                 numbers.
                             
+        --region-csv            Prints out a csv format of aggregated data by region. This option 
+                                automatically turns on --quiet mode. It's best to pipe this output
+                                to a file. Example:
+
+                                        ./s3info.py --region-csv > s3-report.csv
+
+                                NOTE: This mode will suppress all AccessDenied errors for buckets. 
+                                Make sure the access keys/profile you are using has permission to 
+                                read all your buckets.
+                            
         --report-mode           This option only outputs the number of bytes without commas to
                                 the console. This allows the output to be piped to a variable,
                                 function, etc. This option automatically turns on --quiet,  
-                                --raw-bytes, and --no-comma flags.
+                                --raw-bytes, and --no-comma flags. NOTE: This mode will suppress 
+                                all AccessDenied errors for buckets. Make sure the access keys/profile
+                                you are using has permission to read all your buckets..
 ```
