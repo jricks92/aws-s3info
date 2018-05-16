@@ -12,6 +12,7 @@ uses concurrent threads to speed up the process. By default, this tool uses the 
 stored in your ~/.aws/config file. IMPORTANT: Make sure you have a default region associated 
 with your profile!
 
+
 ## Usage
 ```
 usage: ./s3info.py  [-h | --help] [-q | --quiet] [--profile=<profile>]
